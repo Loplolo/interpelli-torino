@@ -1,0 +1,212 @@
+import csv
+import datetime
+import io
+import json
+import os
+import re
+
+import requests
+from bs4 import BeautifulSoup
+from telegram.error import BadRequest, Forbidden
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+
+url = os.environ.get("URL") or (
+    "https://servizi.istruzionepiemonte.it/interpello2026/ric_interpello_ambito_to.php"
+)
+cache = os.environ.get("CACHE") or "interpello.json"
+TOKEN = os.environ.get("BOT_TOKEN")
+USERS_FILE = os.environ.get("USERS_FILE") or "users.json"
+
+
+def scrape(url, cache):
+    html = requests.get(url, timeout=30).text
+    soup = BeautifulSoup(html, "lxml")
+    rows = []
+    for row in soup.find_all("tr"):
+        cells = row.find_all(["td", "th"])
+        record = [c.get_text(strip=True) for c in cells]
+        rows.append(record)
+
+    if cache:
+        with open(cache, "w", encoding="utf-8") as f:
+            json.dump(rows, f, indent=2)
+    return rows
+
+
+def load_cache():
+    try:
+        with open(cache, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
+
+def to_csv(rows):
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerows(rows)
+    return io.BytesIO(buf.getvalue().encode("utf-8"))
+
+
+def parse_date(date_str):
+    if not date_str:
+        return None
+    match = re.search(r"\d{2}/\d{2}/\d{4}", date_str)
+    if match:
+        try:
+            return datetime.datetime.strptime(match.group(), "%d/%m/%Y").date()
+        except ValueError:
+            return None
+    return None
+
+
+def load_users():
+    try:
+        with open(USERS_FILE, "r") as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
+
+
+def save_user(chat_id):
+    users = load_users()
+    if chat_id not in users:
+        users.add(chat_id)
+        with open(USERS_FILE, "w") as f:
+            json.dump(list(users), f)
+
+
+def remove_user(chat_id):
+    users = load_users()
+    if chat_id in users:
+        users.remove(chat_id)
+        with open(USERS_FILE, "w") as f:
+            json.dump(list(users), f)
+
+
+async def download(update, context):
+    apertura_filter = None
+    chiusura_filter = None
+    stato_filter = None
+
+    for arg in context.args:
+        if "=" in arg:
+            key, val = arg.split("=", 1)
+            key = key.lower()
+            if key in ["apertura", "da"]:
+                apertura_filter = parse_date(val)
+            elif key in ["chiusura", "a"]:
+                chiusura_filter = parse_date(val)
+            elif key in ["stato"]:
+                stato_filter = val.lower()
+
+    text = load_cache()
+    if not text:
+        text = scrape(url, cache)
+
+    filtered_text = []
+    if text:
+        filtered_text.append(text[0])
+        for row in text[1:]:
+            if stato_filter:
+                if len(row) <= 8 or stato_filter not in row[8].lower():
+                    continue
+
+            if apertura_filter or chiusura_filter:
+                row_dates = [d for d in (parse_date(c) for c in row) if d is not None]
+
+                if apertura_filter and not any(d >= apertura_filter for d in row_dates):
+                    continue
+                if chiusura_filter and not any(d <= chiusura_filter for d in row_dates):
+                    continue
+
+            filtered_text.append(row)
+
+    csv_file = to_csv(filtered_text)
+
+    filename_parts = ["interpelli"]
+    if stato_filter:
+        filename_parts.append(stato_filter)
+    if apertura_filter:
+        filename_parts.append(f"ap_{apertura_filter.strftime('%Y%m%d')}")
+    if chiusura_filter:
+        filename_parts.append(f"ch_{chiusura_filter.strftime('%Y%m%d')}")
+    filename_parts.append(datetime.datetime.now().strftime("%Y%m%d_%H%M"))
+
+    final_filename = "_".join(filename_parts) + ".csv"
+
+    await update.message.reply_document(
+        document=csv_file,
+        filename=final_filename,
+    )
+
+
+async def echo(update, context):
+    pass
+
+
+async def update_data(context):
+    old_text = load_cache()
+    new_text = scrape(url, cache)
+
+    if not old_text:
+        return
+
+    old_set = {tuple(row) for row in old_text}
+    new_rows = [row for row in new_text if tuple(row) not in old_set]
+
+    if new_rows:
+        message = f"Nuovi interpelli:\n\n"
+        for row in new_rows:
+            message += " - ".join(row) + "\n\n"
+
+        users = load_users()
+        for chat_id in list(users):
+            try:
+                for i in range(0, len(message), 4000):
+                    await context.bot.send_message(
+                        chat_id=chat_id, text=message[i : i + 4000]
+                    )
+            except (Forbidden, BadRequest):
+                remove_user(chat_id)
+
+
+async def start(update, context):
+    save_user(update.effective_chat.id)
+    messaggio = (
+        "Comandi disponibili:\n"
+        "- /download [data_apertura] [data_chiusura] [stato]\n\n"
+        "Esempi:\n"
+        "- /download\n"
+        "- /download apertura=01/11/2026\n"
+        "- /download chiusura=31/10/2026\n"
+        "- /download stato=aperto\n"
+    )
+    await update.message.reply_text(messaggio)
+
+
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.job_queue.run_daily(
+        update_data,
+        time=datetime.time(hour=0, minute=5),
+    )
+    app.job_queue.run_daily(
+        update_data,
+        time=datetime.time(hour=6, minute=5),
+    )
+    app.job_queue.run_daily(
+        update_data,
+        time=datetime.time(hour=12, minute=5),
+    )
+    app.job_queue.run_daily(
+        update_data,
+        time=datetime.time(hour=18, minute=5),
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("download", download))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+
+    app.run_polling()

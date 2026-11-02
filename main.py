@@ -13,9 +13,10 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 url = os.environ.get("URL") or (
     "https://servizi.istruzionepiemonte.it/interpello2026/ric_interpello_ambito_to.php"
 )
-cache = os.environ.get("CACHE") or "interpello.json"
+cache = os.environ.get("CACHE") or "interpelli.json"
 TOKEN = os.environ.get("BOT_TOKEN")
 USERS_FILE = os.environ.get("USERS_FILE") or "users.json"
+SENT_FILE = os.environ.get("SENT_FILE") or "sent.json"
 
 
 def scrape(url, cache):
@@ -39,6 +40,23 @@ def load_cache():
             return json.load(f)
     except FileNotFoundError:
         return []
+
+
+def row_key(row):
+    return tuple(row)
+
+
+def load_sent():
+    try:
+        with open(SENT_FILE, encoding="utf-8") as f:
+            return {row_key(row) for row in json.load(f)}
+    except FileNotFoundError:
+        return None
+
+
+def save_sent(sent):
+    with open(SENT_FILE, "w", encoding="utf-8") as f:
+        json.dump([list(row) for row in sorted(sent)], f)
 
 
 def to_csv(rows):
@@ -101,8 +119,6 @@ async def download(update, context):
                 stato_filter = val.lower()
 
     text = load_cache()
-    if not text:
-        text = scrape(url, cache)
 
     filtered_text = []
     if text:
@@ -121,6 +137,10 @@ async def download(update, context):
                     continue
 
             filtered_text.append(row)
+
+    if len(filtered_text) <= 1:
+        await update.message.reply_text("Nessun dato rilevato")
+        return
 
     csv_file = to_csv(filtered_text)
 
@@ -146,29 +166,43 @@ async def echo(update, context):
 
 
 async def update_data(context):
-    old_text = load_cache()
     new_text = scrape(url, cache)
-
-    if not old_text:
+    if not new_text:
         return
 
-    old_set = {tuple(row) for row in old_text}
-    new_rows = [row for row in new_text if tuple(row) not in old_set]
+    sent = load_sent()
+    if sent is None:
+        save_sent({row_key(row) for row in new_text[1:]})
+        return
 
-    if new_rows:
-        message = f"Nuovi interpelli:\n\n"
-        for row in new_rows:
-            message += " - ".join(row) + "\n\n"
+    new_rows = []
+    seen = set(sent)
+    for row in new_text[1:]:
+        key = row_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        new_rows.append(row)
 
-        users = load_users()
-        for chat_id in list(users):
-            try:
-                for i in range(0, len(message), 4000):
-                    await context.bot.send_message(
-                        chat_id=chat_id, text=message[i : i + 4000]
-                    )
-            except (Forbidden, BadRequest):
-                remove_user(chat_id)
+    if not new_rows:
+        return
+
+    message = f"Nuovi interpelli:\n\n"
+    for row in new_rows:
+        message += " - ".join(row) + "\n\n"
+
+    users = load_users()
+    for chat_id in list(users):
+        try:
+            for i in range(0, len(message), 4000):
+                await context.bot.send_message(
+                    chat_id=chat_id, text=message[i : i + 4000]
+                )
+        except (Forbidden, BadRequest):
+            remove_user(chat_id)
+
+    sent.update(row_key(row) for row in new_rows)
+    save_sent(sent)
 
 
 async def start(update, context):
@@ -186,6 +220,17 @@ async def start(update, context):
 
 
 if __name__ == "__main__":
+    if not load_cache():
+        try:
+            scrape(url, cache)
+        except Exception as exc:
+            print(f"Initial scrape failed: {exc}", flush=True)
+
+    if load_sent() is None:
+        initial = load_cache()
+        if initial:
+            save_sent({row_key(row) for row in initial[1:]})
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.job_queue.run_daily(

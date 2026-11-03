@@ -187,9 +187,19 @@ async def update_data(context):
     if not new_rows:
         return
 
-    message = f"Nuovi interpelli:\n\n"
-    for row in new_rows:
-        message += " - ".join(row) + "\n\n"
+    new_open = [row for row in new_rows if "aperto" in row[8].lower()]
+    new_closed = [row for row in new_rows if not "aperto" in row[8].lower()]
+
+    message = ""
+    if new_open:
+        message += "Nuovi Interpelli Aperti:\n\n"
+        for row in new_open:
+            message += " - ".join(row) + "\n\n"
+
+    if new_closed:
+        message += "Interpelli Chiusi o Cancellati:\n\n"
+        for row in new_closed:
+            message += " - ".join(row) + "\n\n"
 
     users = load_users()
     for chat_id in list(users):

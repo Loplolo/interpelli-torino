@@ -47,12 +47,6 @@ def row_key(row):
 
 
 def record_key(row):
-    """Identity of an interpello, ignoring mutable fields.
-
-    The first 8 columns identify the record (school, class, type, course,
-    duration and dates). Columns 8-11 hold the status and cancellation
-    details, which change over time.
-    """
     return tuple(row[:8])
 
 
@@ -210,15 +204,15 @@ async def update_data(context):
         for row in new_open:
             message += " - ".join(row) + "\n\n"
 
-    if changed:
-        message += "Interpelli Modificati:\n\n"
-        for row in changed:
-            message += " - ".join(row) + "\n\n"
+    # if changed:
+    #    message += "Interpelli Modificati:\n\n"
+    #    for row in changed:
+    #        message += " - ".join(row) + "\n\n"
 
-    if new_closed:
-        message += "Interpelli Chiusi o Cancellati:\n\n"
-        for row in new_closed:
-            message += " - ".join(row) + "\n\n"
+    # if new_closed:
+    #    message += "Interpelli Chiusi o Cancellati:\n\n"
+    #    for row in new_closed:
+    #        message += " - ".join(row) + "\n\n"
 
     users = load_users()
     for chat_id in list(users):

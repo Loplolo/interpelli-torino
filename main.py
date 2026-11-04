@@ -46,6 +46,16 @@ def row_key(row):
     return tuple(row)
 
 
+def record_key(row):
+    """Identity of an interpello, ignoring mutable fields.
+
+    The first 8 columns identify the record (school, class, type, course,
+    duration and dates). Columns 8-11 hold the status and cancellation
+    details, which change over time.
+    """
+    return tuple(row[:8])
+
+
 def load_sent():
     try:
         with open(SENT_FILE, encoding="utf-8") as f:
@@ -187,13 +197,22 @@ async def update_data(context):
     if not new_rows:
         return
 
-    new_open = [row for row in new_rows if "aperto" in row[8].lower()]
-    new_closed = [row for row in new_rows if not "aperto" in row[8].lower()]
+    known_records = {record_key(row) for row in sent}
+    changed = [row for row in new_rows if record_key(row) in known_records]
+    added = [row for row in new_rows if record_key(row) not in known_records]
+
+    new_open = [row for row in added if "aperto" in row[8].lower()]
+    new_closed = [row for row in added if not "aperto" in row[8].lower()]
 
     message = ""
     if new_open:
         message += "Nuovi Interpelli Aperti:\n\n"
         for row in new_open:
+            message += " - ".join(row) + "\n\n"
+
+    if changed:
+        message += "Interpelli Modificati:\n\n"
+        for row in changed:
             message += " - ".join(row) + "\n\n"
 
     if new_closed:

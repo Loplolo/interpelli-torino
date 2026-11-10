@@ -20,6 +20,13 @@ USERS_FILE = os.environ.get("USERS_FILE") or "users.json"
 SENT_FILE = os.environ.get("SENT_FILE") or "sent.json"
 
 
+def strip_header(rows):
+    if not rows:
+        return rows
+    header = rows[0]
+    return [header] + [row for row in rows[1:] if row != header]
+
+
 def scrape(url, cache):
     html = requests.get(url, timeout=30).text
     soup = BeautifulSoup(html, "lxml")
@@ -28,6 +35,8 @@ def scrape(url, cache):
         cells = row.find_all(["td", "th"])
         record = [c.get_text(strip=True) for c in cells]
         rows.append(record)
+
+    rows = strip_header(rows)
 
     if cache:
         with open(cache, "w", encoding="utf-8") as f:
@@ -38,23 +47,15 @@ def scrape(url, cache):
 def load_cache():
     try:
         with open(cache, encoding="utf-8") as f:
-            return json.load(f)
+            return strip_header(json.load(f))
     except FileNotFoundError:
         return []
-
-
-def row_key(row):
-    return tuple(row)
-
-
-def record_key(row):
-    return tuple(row[:8])
 
 
 def load_sent():
     try:
         with open(SENT_FILE, encoding="utf-8") as f:
-            return {row_key(row) for row in json.load(f)}
+            return {tuple(row) for row in json.load(f)}
     except FileNotFoundError:
         return None
 
@@ -115,6 +116,14 @@ def maps_link(row):
     return f"https://www.google.com/maps/search/?api=1&query={query}"
 
 
+def email_link(row):
+    code = row[0].strip() if len(row) > 0 else ""
+    if not code:
+        return None
+    email = code + "@istruzione.it"
+    return email
+
+
 def split_message(blocks, limit=4000):
     chunks = []
     current = ""
@@ -135,20 +144,20 @@ def split_message(blocks, limit=4000):
 
 
 async def download(update, context):
-    apertura_filter = None
-    chiusura_filter = None
-    stato_filter = None
+    opening_filter = None
+    closing_filter = None
+    state_filter = None
 
     for arg in context.args:
         if "=" in arg:
             key, val = arg.split("=", 1)
             key = key.lower()
             if key in ["apertura", "da"]:
-                apertura_filter = parse_date(val)
+                opening_filter = parse_date(val)
             elif key in ["chiusura", "a"]:
-                chiusura_filter = parse_date(val)
+                closing_filter = parse_date(val)
             elif key in ["stato"]:
-                stato_filter = val.lower()
+                state_filter = val.lower()
 
     text = load_cache()
 
@@ -156,16 +165,15 @@ async def download(update, context):
     if text:
         filtered_text.append(text[0])
         for row in text[1:]:
-            if stato_filter:
-                if len(row) <= 8 or stato_filter not in row[8].lower():
-                    continue
+            if state_filter and (len(row) <= 8 or state_filter not in row[8].lower()):
+                continue
 
-            if apertura_filter or chiusura_filter:
+            if opening_filter or closing_filter:
                 row_dates = [d for d in (parse_date(c) for c in row) if d is not None]
 
-                if apertura_filter and not any(d >= apertura_filter for d in row_dates):
+                if opening_filter and not any(d >= opening_filter for d in row_dates):
                     continue
-                if chiusura_filter and not any(d <= chiusura_filter for d in row_dates):
+                if closing_filter and not any(d <= closing_filter for d in row_dates):
                     continue
 
             filtered_text.append(row)
@@ -177,24 +185,20 @@ async def download(update, context):
     csv_file = to_csv(filtered_text)
 
     filename_parts = ["interpelli"]
-    if stato_filter:
-        filename_parts.append(stato_filter)
-    if apertura_filter:
-        filename_parts.append(f"ap_{apertura_filter.strftime('%Y%m%d')}")
-    if chiusura_filter:
-        filename_parts.append(f"ch_{chiusura_filter.strftime('%Y%m%d')}")
+    if state_filter:
+        filename_parts.append(state_filter)
+    if opening_filter:
+        filename_parts.append(f"ap_{opening_filter.strftime('%Y%m%d')}")
+    if closing_filter:
+        filename_parts.append(f"ch_{closing_filter.strftime('%Y%m%d')}")
     filename_parts.append(datetime.datetime.now().strftime("%Y%m%d_%H%M"))
 
-    final_filename = "_".join(filename_parts) + ".csv"
+    out_filename = "_".join(filename_parts) + ".csv"
 
     await update.message.reply_document(
         document=csv_file,
-        filename=final_filename,
+        filename=out_filename,
     )
-
-
-async def echo(update, context):
-    pass
 
 
 async def update_data(context):
@@ -204,10 +208,10 @@ async def update_data(context):
 
     sent = load_sent()
     if sent is None:
-        save_sent({row_key(row) for row in new_text[1:]})
+        save_sent({tuple(row) for row in new_text[1:]})
         return
 
-    current = {row_key(row) for row in new_text[1:]}
+    current = {tuple(row) for row in new_text[1:]}
     stale = sent - current if current else set()
     if stale:
         sent -= stale
@@ -215,7 +219,7 @@ async def update_data(context):
     new_rows = []
     seen = set(sent)
     for row in new_text[1:]:
-        key = row_key(row)
+        key = tuple(row)
         if key in seen:
             continue
         seen.add(key)
@@ -226,12 +230,9 @@ async def update_data(context):
             save_sent(sent)
         return
 
-    known_records = {record_key(row) for row in sent}
-    changed = [row for row in new_rows if record_key(row) in known_records]
-    added = [row for row in new_rows if record_key(row) not in known_records]
-
+    known_records = {tuple(row[:8]) for row in sent}
+    added = [row for row in new_rows if tuple(row[:8]) not in known_records]
     new_open = [row for row in added if "aperto" in row[8].lower()]
-    new_closed = [row for row in added if not "aperto" in row[8].lower()]
 
     blocks = []
     if new_open:
@@ -239,19 +240,12 @@ async def update_data(context):
         for row in new_open:
             block = " - ".join(row) + "\n"
             link = maps_link(row)
+            email = email_link(row)
             if link:
                 block += f"📍 {link}\n"
+            if email:
+                block += f"📧 {email}\n"
             blocks.append(block + "\n")
-
-    # if changed:
-    #    message += "Interpelli Modificati:\n\n"
-    #    for row in changed:
-    #        message += " - ".join(row) + "\n\n"
-
-    # if new_closed:
-    #    message += "Interpelli Chiusi o Cancellati:\n\n"
-    #    for row in new_closed:
-    #        message += " - ".join(row) + "\n\n"
 
     users = load_users()
     for chat_id in list(users):
@@ -261,7 +255,7 @@ async def update_data(context):
         except (Forbidden, BadRequest):
             remove_user(chat_id)
 
-    sent.update(row_key(row) for row in new_rows)
+    sent.update(tuple(row) for row in new_rows)
     save_sent(sent)
 
 
@@ -289,7 +283,7 @@ if __name__ == "__main__":
     if load_sent() is None:
         initial = load_cache()
         if initial:
-            save_sent({row_key(row) for row in initial[1:]})
+            save_sent({tuple(row) for row in initial[1:]})
 
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -312,6 +306,6 @@ if __name__ == "__main__":
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("download", download))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND))
 
     app.run_polling()

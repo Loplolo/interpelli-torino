@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import urllib.parse
 
 import requests
 from bs4 import BeautifulSoup
@@ -106,6 +107,33 @@ def remove_user(chat_id):
             json.dump(list(users), f)
 
 
+def maps_link(row):
+    name = row[1].strip() if len(row) > 1 else ""
+    if not name:
+        return None
+    query = urllib.parse.quote(name)
+    return f"https://www.google.com/maps/search/?api=1&query={query}"
+
+
+def split_message(blocks, limit=4000):
+    chunks = []
+    current = ""
+    for block in blocks:
+        while len(block) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(block[:limit])
+            block = block[limit:]
+        if current and len(current) + len(block) > limit:
+            chunks.append(current)
+            current = ""
+        current += block
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 async def download(update, context):
     apertura_filter = None
     chiusura_filter = None
@@ -205,11 +233,15 @@ async def update_data(context):
     new_open = [row for row in added if "aperto" in row[8].lower()]
     new_closed = [row for row in added if not "aperto" in row[8].lower()]
 
-    message = ""
+    blocks = []
     if new_open:
-        message += "Nuovi Interpelli Aperti:\n\n"
+        blocks.append("Nuovi Interpelli Aperti:\n\n")
         for row in new_open:
-            message += " - ".join(row) + "\n\n"
+            block = " - ".join(row) + "\n"
+            link = maps_link(row)
+            if link:
+                block += f"📍 {link}\n"
+            blocks.append(block + "\n")
 
     # if changed:
     #    message += "Interpelli Modificati:\n\n"
@@ -224,10 +256,8 @@ async def update_data(context):
     users = load_users()
     for chat_id in list(users):
         try:
-            for i in range(0, len(message), 4000):
-                await context.bot.send_message(
-                    chat_id=chat_id, text=message[i : i + 4000]
-                )
+            for chunk in split_message(blocks):
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
         except (Forbidden, BadRequest):
             remove_user(chat_id)
 

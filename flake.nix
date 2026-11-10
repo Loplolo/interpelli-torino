@@ -20,15 +20,14 @@
         pandas
         lxml
         beautifulsoup4
-        geopy
         python-telegram-bot
         apscheduler
-        cacert
       ]);
   in {
     devShells.${system}.default = pkgs.mkShell {
       buildInputs = [
         python
+        pkgs.cacert
       ];
     };
   };

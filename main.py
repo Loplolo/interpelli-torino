@@ -179,6 +179,11 @@ async def update_data(context):
         save_sent({row_key(row) for row in new_text[1:]})
         return
 
+    current = {row_key(row) for row in new_text[1:]}
+    stale = sent - current if current else set()
+    if stale:
+        sent -= stale
+
     new_rows = []
     seen = set(sent)
     for row in new_text[1:]:
@@ -189,6 +194,8 @@ async def update_data(context):
         new_rows.append(row)
 
     if not new_rows:
+        if stale:
+            save_sent(sent)
         return
 
     known_records = {record_key(row) for row in sent}

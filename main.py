@@ -9,7 +9,7 @@ import urllib.parse
 import requests
 from bs4 import BeautifulSoup
 from telegram.error import BadRequest, Forbidden
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler
 
 url = os.environ.get("URL") or (
     "https://servizi.istruzionepiemonte.it/interpello2026/ric_interpello_ambito_to.php"
@@ -232,7 +232,7 @@ async def update_data(context):
 
     known_records = {tuple(row[:8]) for row in sent}
     added = [row for row in new_rows if tuple(row[:8]) not in known_records]
-    new_open = [row for row in added if "aperto" in row[8].lower()]
+    new_open = [row for row in added if len(row) > 8 and "aperto" in row[8].lower()]
 
     blocks = []
     if new_open:
@@ -306,6 +306,5 @@ if __name__ == "__main__":
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("download", download))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND))
 
     app.run_polling()

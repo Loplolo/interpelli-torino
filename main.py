@@ -237,8 +237,33 @@ async def update_data(context):
     blocks = []
     if new_open:
         blocks.append("Nuovi Interpelli Aperti:\n\n")
+        labels = [
+            "Codice",
+            "Istituto",
+            "Classe di concorso",
+            "Tipo cattedra",
+            "Corso",
+            "Durata supplenza",
+            "Apertura",
+            "Interpello",
+            None,
+            "Chiusura",
+            "Note cancellazione",
+            "Data cancellazione",
+        ]
         for row in new_open:
-            block = " - ".join(row) + "\n"
+            cells = [c.strip() for c in row]
+            while cells and cells[-1] in ("", "-"):
+                cells.pop()
+            lines = []
+            for i, c in enumerate(cells):
+                if not c:
+                    continue
+                label = labels[i] if i < len(labels) else None
+                if label is None:
+                    continue
+                lines.append(f"{label}: {c.replace(chr(9), ' / ')}")
+            block = "\n".join(lines) + "\n"
             link = maps_link(row)
             email = email_link(row)
             if link:
